@@ -1,0 +1,896 @@
+(function ($) {
+
+/**
+ * A progressbar object. Initialized with the given id. Must be inserted into
+ * the DOM afterwards through progressBar.element.
+ *
+ * method is the function which will perform the HTTP request to get the
+ * progress bar state. Either "GET" or "POST".
+ *
+ * e.g. pb = new progressBar('myProgressBar');
+ *      some_element.appendChild(pb.element);
+ */
+Drupal.progressBar = function (id, updateCallback, method, errorCallback) {
+  var pb = this;
+  this.id = id;
+  this.method = method || 'GET';
+  this.updateCallback = updateCallback;
+  this.errorCallback = errorCallback;
+
+  // The WAI-ARIA setting aria-live="polite" will announce changes after users
+  // have completed their current activity and not interrupt the screen reader.
+  this.element = $('<div class="progress" aria-live="polite"></div>').attr('id', id);
+  this.element.html('<div class="bar"><div class="filled"></div></div>' +
+                    '<div class="percentage"></div>' +
+                    '<div class="message">&nbsp;</div>');
+};
+
+/**
+ * Set the percentage and status message for the progressbar.
+ */
+Drupal.progressBar.prototype.setProgress = function (percentage, message) {
+  if (percentage >= 0 && percentage <= 100) {
+    $('div.filled', this.element).css('width', percentage + '%');
+    $('div.percentage', this.element).html(percentage + '%');
+  }
+  $('div.message', this.element).html(message);
+  if (this.updateCallback) {
+    this.updateCallback(percentage, message, this);
+  }
+};
+
+/**
+ * Start monitoring progress via Ajax.
+ */
+Drupal.progressBar.prototype.startMonitoring = function (uri, delay) {
+  this.delay = delay;
+  this.uri = uri;
+  this.sendPing();
+};
+
+/**
+ * Stop monitoring progress via Ajax.
+ */
+Drupal.progressBar.prototype.stopMonitoring = function () {
+  clearTimeout(this.timer);
+  // This allows monitoring to be stopped from within the callback.
+  this.uri = null;
+};
+
+/**
+ * Request progress data from server.
+ */
+Drupal.progressBar.prototype.sendPing = function () {
+  if (this.timer) {
+    clearTimeout(this.timer);
+  }
+  if (this.uri) {
+    var pb = this;
+    // When doing a post request, you need non-null data. Otherwise a
+    // HTTP 411 or HTTP 406 (with Apache mod_security) error may result.
+    $.ajax({
+      type: this.method,
+      url: this.uri,
+      data: '',
+      dataType: 'json',
+      success: function (progress) {
+        // Display errors.
+        if (progress.status == 0) {
+          pb.displayError(progress.data);
+          return;
+        }
+        // Update display.
+        pb.setProgress(progress.percentage, progress.message);
+        // Schedule next timer.
+        pb.timer = setTimeout(function () { pb.sendPing(); }, pb.delay);
+      },
+      error: function (xmlhttp) {
+        pb.displayError(Drupal.ajaxError(xmlhttp, pb.uri));
+      }
+    });
+  }
+};
+
+/**
+ * Display errors on the page.
+ */
+Drupal.progressBar.prototype.displayError = function (string) {
+  var error = $('<div class="messages error"></div>').html(string);
+  $(this.element).before(error).hide();
+
+  if (this.errorCallback) {
+    this.errorCallback(this);
+  }
+};
+
+})(jQuery);
+
+;/*})'"*/
+;/*})'"*/
+(function ($) {
+
+Drupal.behaviors.textarea = {
+  attach: function (context, settings) {
+    $('.form-textarea-wrapper.resizable', context).once('textarea', function () {
+      var staticOffset = null;
+      var textarea = $(this).addClass('resizable-textarea').find('textarea');
+      var grippie = $('<div class="grippie"></div>').mousedown(startDrag);
+
+      grippie.insertAfter(textarea);
+
+      function startDrag(e) {
+        staticOffset = textarea.height() - e.pageY;
+        textarea.css('opacity', 0.25);
+        $(document).mousemove(performDrag).mouseup(endDrag);
+        return false;
+      }
+
+      function performDrag(e) {
+        textarea.height(Math.max(32, staticOffset + e.pageY) + 'px');
+        return false;
+      }
+
+      function endDrag(e) {
+        $(document).unbind('mousemove', performDrag).unbind('mouseup', endDrag);
+        textarea.css('opacity', 1);
+      }
+    });
+  }
+};
+
+})(jQuery);
+
+;/*})'"*/
+;/*})'"*/
+/**
+ * @file
+ * Linkit dashboard functions
+ */
+
+(function ($) {
+
+Drupal.behaviors.linkitDashboard = {
+  attach: function (context, settings) {
+    // Bind the insert link button.
+    $('.linkit-insert', context).once('linkit-insert', function() {
+      $('.linkit-insert', context).click(function(event) {
+        event.preventDefault();
+        // Call the insertLink() function.
+        Drupal.linkit.getDialogHelper(Drupal.settings.linkit.currentInstance.helper).insertLink(Drupal.linkit.getLink());
+
+        // Close the dialog.
+        Drupal.linkit.modalClose();
+      });
+    });
+
+    // Bind the close link.
+    $('#linkit-cancel', context).once('linkit-cancel', function() {
+      $('#linkit-cancel', context).bind('click', Drupal.linkit.modalClose);
+    });
+
+    // Run the validation if the path field is populated directly.
+    $('#edit-linkit-path', context).bind('keyup paste input propertychange', function(){
+      Drupal.linkit.requiredFieldsValidation();
+    });
+
+    $(".ui-dialog-titlebar").show();
+
+    // Run required field validation.
+    Drupal.linkit.requiredFieldsValidation();
+
+    if (!Drupal.settings.linkit.currentInstance.suppressProfileChanger) {
+      // Make the profile changer
+      Drupal.linkit.profileChanger(context);
+    }
+    if (Drupal.settings.linkit.IMCEurl && !$('#linkit-imce', context).length) {
+      var $imceButton = $('<input />')
+        .attr({type: 'button', id: 'linkit-imce', name: 'linkit-imce'})
+        .addClass('form-submit')
+        .val(Drupal.t('Open file browser'))
+        .insertAfter($('.form-item-linkit-search', context))
+        .click(function(e) {
+          e.preventDefault();
+          Drupal.linkit.openFileBrowser();
+        });
+    }
+  }
+};
+
+/**
+ * Check for mandatory fields in the form and disable for submissions
+ * if any of the fields are empty.
+ */
+Drupal.linkit.requiredFieldsValidation = function() {
+  var allowed = true;
+  $('#linkit-modal .required').each(function() {
+    if (!$(this).val()) {
+      allowed = false;
+      return false;
+    }
+  });
+  if (allowed) {
+    $('#linkit-modal .linkit-insert')
+      .removeAttr('disabled')
+      .removeClass('form-button-disabled');
+  }
+  else {
+    $('#linkit-modal .linkit-insert')
+      .attr('disabled', 'disabled')
+      .addClass('form-button-disabled');
+  }
+};
+
+/**
+ * Open the IMCE file browser
+ */
+Drupal.linkit.openFileBrowser = function () {
+  window.open(decodeURIComponent(Drupal.settings.linkit.IMCEurl), '', 'width=760,height=560,resizable=1');
+};
+
+/**
+ * When a file is inserted through IMCE, this function is called.
+ * See IMCE api for details.
+ *
+ * @param file
+ *   The file object that was selected inside IMCE
+ * @param win
+ *   The IMCE window object
+ */
+Drupal.linkit.IMCECallback = function(file, win) {
+  Drupal.linkit.populateFields({
+     path: win.imce.decode(Drupal.settings.basePath +
+         Drupal.settings.linkit.publicFilesDirectory + '/' + file.relpath)
+  });
+  win.close();
+};
+
+/**
+ * Populate fields on the dashboard.
+ *
+ * @param link
+ *   An object with the following properties (all are optional):
+ *   - path: The anchor's href.
+ *   - attributes: An object with additional attributes for the anchor element.
+ */
+Drupal.linkit.populateFields = function(link) {
+  link = link || {};
+  link.attributes = link.attributes || {};
+
+  $('#linkit-modal .linkit-path-element').val(link.path);
+
+  $.each(link.attributes, function(name, value) {
+    $('#linkit-modal .linkit-attributes .linkit-attribute-' + name).val(value);
+  });
+
+  // Run required field validation.
+  Drupal.linkit.requiredFieldsValidation();
+};
+
+/**
+ * Retrieve a link object by extracting values from the form.
+ *
+ * @return
+ *   The link object.
+ */
+ Drupal.linkit.getLink = function() {
+    var link = {
+      path: $('#linkit-modal .linkit-path-element ').val(),
+      attributes: {}
+    };
+    $.each(Drupal.linkit.additionalAttributes(), function(f, name) {
+     link.attributes[name] = $('#linkit-modal .linkit-attributes .linkit-attribute-' + name).val();
+    });
+  return link;
+};
+
+/**
+ * Retrieve a list of the currently available additional attributes in the
+ * dashboard. The attribute "href" is excluded.
+ *
+ * @return
+ *   An array with the names of the attributes.
+ */
+Drupal.linkit.additionalAttributes = function() {
+  var attributes = [];
+  $('#linkit-modal .linkit-attributes .linkit-attribute').each(function() {
+    // Remove the 'linkit_' prefix.
+    attributes.push($(this).attr('name').substr(7));
+  });
+  return attributes;
+};
+
+Drupal.linkit.profileChanger = function(context) {
+  $('#linkit-profile-changer > div.form-item', context).once('linkit-change-profile', function() {
+    var target = $(this);
+    var toggler = $('<div id="linkit-profile-changer-toggler"></div>')
+    .html(Drupal.t('Change profile'))
+    .click(function() {
+      target.slideToggle();
+    });
+    $(this).after(toggler);
+  });
+
+  $('#linkit-profile-changer .form-radio', context).each(function() {
+    var id = $(this).attr('id');
+    var profile = $(this).val();
+    if (Drupal.settings.linkit.currentInstance.enabled_profiles) {
+      $(this).closest('.form-item').toggle(!!Drupal.settings.linkit.currentInstance.enabled_profiles[profile]);
+    }
+    if (typeof Drupal.ajax[id] != 'undefined') {
+      // @TODO: Jquery 1.5 accept success setting to be an array of functions.
+      // But we have to wait for jquery to get updated in Drupal core.
+      // In the meantime we have to override it.
+      Drupal.ajax[id].options.success = function (response, status) {
+        if (typeof response == 'string') {
+          response = $.parseJSON(response);
+        }
+
+        // Update the autocomplete url.
+        Drupal.settings.linkit.currentInstance.autocompletePathParsed = Drupal.settings.linkit.autocompletePath.replace('___profile___', profile);
+
+        // Call the ajax success method.
+        Drupal.ajax[id].success(response, status);
+        $('#linkit-profile-changer > div.form-item').slideToggle();
+      };
+    }
+  });
+};
+
+Drupal.behaviors.linkitSearch = {
+  attach: function(context, settings) {
+
+    $('.linkit-search-element').once('linkit-search', function() {
+      // Create a synonym for this to reduce code confusion.
+      var searchElement = $('.linkit-search-element');
+      var callbacks = {
+        constructURL: function(path, search) {
+          return path + encodeURIComponent(search);
+        },
+
+        insertSuggestionList: function($results, $input) {
+          var top = $input.position().top + $input.outerHeight() - 5;
+
+          $results.width($input.outerWidth()).css({
+            position: 'absolute',
+            // High value because of other overlays like
+            // wysiwyg fullscreen (TinyMCE) mode.
+            zIndex: 211000,
+            maxHeight: $(window).height() - (top + 20)
+          })
+          .hide()
+          .insertAfter($input);
+        },
+
+        select: function(result) {
+          if (typeof result == 'undefined') {
+            return false;
+          }
+          // Only change the link text if it is empty.
+          if (typeof result.disabled != 'undefined' && result.disabled) {
+            return false;
+          }
+
+          Drupal.linkit.populateFields({
+            path: result.path
+          });
+
+          // Store the result title (Used when no selection is made by the user).
+          Drupal.settings.linkit.currentInstance.linkContent = result.title;
+
+          $('.linkit-path-element', context).focus();
+        }
+      };
+
+      searchElement.betterAutocomplete('init', Drupal.settings.linkit.currentInstance.autocompletePathParsed, Drupal.settings.linkit.currentInstance.autocomplete, callbacks);
+    });
+  }
+};
+  
+})(jQuery);
+
+;/*})'"*/
+;/*})'"*/
+
+/**
+ * @file: Popup dialog interfaces for the media project.
+ *
+ * Drupal.media.popups.mediaBrowser
+ *   Launches the media browser which allows users to pick a piece of media.
+ *
+ * Drupal.media.popups.mediaStyleSelector
+ *  Launches the style selection form where the user can choose what
+ *  format/style they want their media in.
+ */
+
+(function ($) {
+namespace('Drupal.media.popups');
+
+/**
+ * Media browser popup. Creates a media browser dialog.
+ *
+ * @param {function}
+ *   onSelect Callback for when dialog is closed, received (Array media, Object
+ *   extra);
+ * @param {Object}
+ *   globalOptions Global options that will get passed upon initialization of
+ *   the browser. @see Drupal.media.popups.mediaBrowser.getDefaults();
+ * @param {Object}
+ *   pluginOptions Options for specific plugins. These are passed to the plugin
+ *   upon initialization.  If a function is passed here as a callback, it is
+ *   obviously not passed, but is accessible to the plugin in
+ *   Drupal.settings.variables. Example:
+ *   pluginOptions = {library: {url_include_patterns:'/foo/bar'}};
+ * @param {Object}
+ *   widgetOptions Options controlling the appearance and behavior of the modal
+ *   dialog. @see Drupal.media.popups.mediaBrowser.getDefaults();
+ */
+Drupal.media.popups.mediaBrowser = function (onSelect, globalOptions, pluginOptions, widgetOptions) {
+  // Get default dialog options.
+  var options = Drupal.media.popups.mediaBrowser.getDefaults();
+
+  // Add global, plugin and widget options.
+  options.global = $.extend({}, options.global, globalOptions);
+  options.plugins = pluginOptions;
+  options.widget = $.extend({}, options.widget, widgetOptions);
+
+  // Find the URL of the modal iFrame.
+  var browserSrc = options.widget.src;
+
+  if ($.isArray(browserSrc) && browserSrc.length) {
+    browserSrc = browserSrc[browserSrc.length - 1];
+  }
+
+  // Create an array of parameters to send along to the iFrame.
+  var params = {};
+
+  // Add global field widget settings and plugin information.
+  $.extend(params, options.global);
+  params.plugins = options.plugins;
+
+  // Append the list of parameters to the iFrame URL as query parameters.
+  browserSrc += '&' + $.param(params);
+
+  // Create an iFrame with the iFrame URL.
+  var mediaIframe = Drupal.media.popups.getPopupIframe(browserSrc, 'mediaBrowser');
+
+  // Attach an onLoad event.
+  mediaIframe.bind('load', options, options.widget.onLoad);
+
+  // Create an array of Dialog options.
+  var dialogOptions = options.dialog;
+
+  // Setup the dialog buttons.
+  var ok = Drupal.t('OK');
+  var notSelected = Drupal.t('You have not selected anything!');
+
+  dialogOptions.buttons[ok] = function () {
+    // Find the current file selection.
+    var selected = this.contentWindow.Drupal.media.browser.selectedMedia;
+
+    // Alert the user if a selection has yet to be made.
+    if (selected.length < 1) {
+      alert(notSelected);
+
+      return;
+    }
+
+    // Select the file.
+    onSelect(selected);
+
+    // Close the dialog.
+    $(this).dialog('close');
+  };
+
+  // Create a jQuery UI dialog with the given options.
+  var dialog = mediaIframe.dialog(dialogOptions);
+
+  // Allow the dialog to react to re-sizing, scrolling, etc.
+  Drupal.media.popups.sizeDialog(dialog);
+  Drupal.media.popups.resizeDialog(dialog);
+  Drupal.media.popups.scrollDialog(dialog);
+  Drupal.media.popups.overlayDisplace(dialog.parents(".ui-dialog"));
+
+  return mediaIframe;
+};
+
+/**
+ * Retrieves a list of default settings for the media browser.
+ *
+ * @return
+ *   An array of default settings.
+ */
+Drupal.media.popups.mediaBrowser.getDefaults = function () {
+  return {
+    global: {
+      types: [], // Types to allow, defaults to all.
+      enabledPlugins: [] // If provided, a list of plugins which should be enabled.
+    },
+    widget: { // Settings for the actual iFrame which is launched.
+      src: Drupal.settings.media.browserUrl, // Src of the media browser (if you want to totally override it)
+      onLoad: Drupal.media.popups.mediaBrowser.mediaBrowserOnLoad // Onload function when iFrame loads.
+    },
+    dialog: Drupal.media.popups.getDialogOptions()
+  };
+};
+
+/**
+ * Sets up the iFrame buttons.
+ */
+Drupal.media.popups.mediaBrowser.mediaBrowserOnLoad = function (e) {
+  var options = e.data;
+
+  // Ensure that the iFrame is defined.
+  if (typeof this.contentWindow.Drupal.media === 'undefined' || typeof
+  this.contentWindow.Drupal.media.browser === 'undefined') {
+    return;
+  }
+
+  // Check if a selection has been made and press the 'ok' button.
+  if (this.contentWindow.Drupal.media.browser.selectedMedia.length > 0) {
+    var ok = Drupal.t('OK');
+    var ok_func = $(this).dialog('option', 'buttons')[ok];
+
+    ok_func.call(this);
+
+    return;
+  }
+};
+
+/**
+ * Finalizes the selection of a file.
+ *
+ * Alerts the user if a selection has yet to be made, triggers the file
+ * selection and closes the modal dialog.
+ */
+Drupal.media.popups.mediaBrowser.finalizeSelection = function () {
+  // Find the current file selection.
+  var selected = this.contentWindow.Drupal.media.browser.selectedMedia;
+
+  // Alert the user if a selection has yet to be made.
+  if (selected.length < 1) {
+    alert(notSelected);
+
+    return;
+  }
+
+  // Select the file.
+  onSelect(selected);
+
+  // Close the dialog.
+  $(this).dialog('close');
+};
+
+/**
+ * Style chooser Popup. Creates a dialog for a user to choose a media style.
+ *
+ * @param mediaFile
+ *   The mediaFile you are requesting this formatting form for.
+ *   @todo: should this be fid? That's actually all we need now.
+ *
+ * @param Function
+ *   onSubmit Function to be called when the user chooses a media style. Takes
+ *   one parameter (Object formattedMedia).
+ *
+ * @param Object
+ *   options Options for the mediaStyleChooser dialog.
+ */
+Drupal.media.popups.mediaStyleSelector = function (mediaFile, onSelect, options) {
+  var defaults = Drupal.media.popups.mediaStyleSelector.getDefaults();
+
+  // @todo: remove this awful hack :(
+  if (typeof defaults.src === 'string' ) {
+    defaults.src = defaults.src.replace('-media_id-', mediaFile.fid) + '&fields=' + encodeURIComponent(JSON.stringify(mediaFile.fields));
+  }
+  else {
+    var src = defaults.src.shift();
+
+    defaults.src.unshift(src);
+    defaults.src = src.replace('-media_id-', mediaFile.fid) + '&fields=' + encodeURIComponent(JSON.stringify(mediaFile.fields));
+  }
+
+  options = $.extend({}, defaults, options);
+
+  // Create an iFrame with the iFrame URL.
+  var mediaIframe = Drupal.media.popups.getPopupIframe(options.src, 'mediaStyleSelector');
+
+  // Attach an onLoad event.
+  mediaIframe.bind('load', options, options.onLoad);
+
+  // Create an array of Dialog options.
+  var dialogOptions = Drupal.media.popups.getDialogOptions();
+
+  // Setup the dialog buttons.
+  var ok = Drupal.t('OK');
+  var notSelected = Drupal.t('Very sorry, there was an unknown error embedding media.');
+
+  dialogOptions.buttons[ok] = function () {
+    // Find the current file selection.
+    var formattedMedia = this.contentWindow.Drupal.media.formatForm.getFormattedMedia();
+    formattedMedia.options = $.extend({}, mediaFile.attributes, formattedMedia.options);
+
+    // Alert the user if a selection has yet to be made.
+    if (!formattedMedia) {
+      alert(notSelected);
+
+      return;
+    }
+
+    // Select the file.
+    onSelect(formattedMedia);
+
+    // Close the dialog.
+    $(this).dialog('close');
+  };
+
+  // Create a jQuery UI dialog with the given options.
+  var dialog = mediaIframe.dialog(dialogOptions);
+
+  // Allow the dialog to react to re-sizing, scrolling, etc.
+  Drupal.media.popups.sizeDialog(dialog);
+  Drupal.media.popups.resizeDialog(dialog);
+  Drupal.media.popups.scrollDialog(dialog);
+  Drupal.media.popups.overlayDisplace(dialog.parents(".ui-dialog"));
+
+  return mediaIframe;
+};
+
+Drupal.media.popups.mediaStyleSelector.mediaBrowserOnLoad = function (e) {
+};
+
+Drupal.media.popups.mediaStyleSelector.getDefaults = function () {
+  return {
+    src: Drupal.settings.media.styleSelectorUrl,
+    onLoad: Drupal.media.popups.mediaStyleSelector.mediaBrowserOnLoad
+  };
+};
+
+/**
+ * Style chooser Popup. Creates a dialog for a user to choose a media style.
+ *
+ * @param mediaFile
+ *   The mediaFile you are requesting this formatting form for.
+ *   @todo: should this be fid? That's actually all we need now.
+ *
+ * @param Function
+ *   onSubmit Function to be called when the user chooses a media style. Takes
+ *   one parameter (Object formattedMedia).
+ *
+ * @param Object
+ *   options Options for the mediaStyleChooser dialog.
+ */
+Drupal.media.popups.mediaFieldEditor = function (fid, onSelect, options) {
+  var defaults = Drupal.media.popups.mediaFieldEditor.getDefaults();
+
+  // @todo: remove this awful hack :(
+  defaults.src = defaults.src.replace('-media_id-', fid);
+  options = $.extend({}, defaults, options);
+
+  // Create an iFrame with the iFrame URL.
+  var mediaIframe = Drupal.media.popups.getPopupIframe(options.src, 'mediaFieldEditor');
+
+  // Attach an onLoad event.
+  mediaIframe.bind('load', options, options.onLoad);
+
+  // Create an array of Dialog options.
+  var dialogOptions = Drupal.media.popups.getDialogOptions();
+
+  // Setup the dialog buttons.
+  var ok = Drupal.t('OK');
+  var notSelected = Drupal.t('Very sorry, there was an unknown error embedding media.');
+
+  dialogOptions.buttons[ok] = function () {
+    // Find the current file selection.
+    var formattedMedia = this.contentWindow.Drupal.media.formatForm.getFormattedMedia();
+
+    // Alert the user if a selection has yet to be made.
+    if (!formattedMedia) {
+      alert(notSelected);
+
+      return;
+    }
+
+    // Select the file.
+    onSelect(formattedMedia);
+
+    // Close the dialog.
+    $(this).dialog('close');
+  };
+
+  // Create a jQuery UI dialog with the given options.
+  var dialog = mediaIframe.dialog(dialogOptions);
+
+  // Allow the dialog to react to re-sizing, scrolling, etc.
+  Drupal.media.popups.sizeDialog(dialog);
+  Drupal.media.popups.resizeDialog(dialog);
+  Drupal.media.popups.scrollDialog(dialog);
+  Drupal.media.popups.overlayDisplace(dialog);
+
+  return mediaIframe;
+};
+
+Drupal.media.popups.mediaFieldEditor.mediaBrowserOnLoad = function (e) {
+
+};
+
+Drupal.media.popups.mediaFieldEditor.getDefaults = function () {
+  return {
+    // @todo: do this for real
+    src: '/media/-media_id-/edit?render=media-popup',
+    onLoad: Drupal.media.popups.mediaFieldEditor.mediaBrowserOnLoad
+  };
+};
+
+/**
+ * Generic functions to both the media-browser and style selector.
+ */
+
+/**
+ * Returns the commonly used options for the dialog.
+ */
+Drupal.media.popups.getDialogOptions = function () {
+  return {
+    title: Drupal.t('Media browser'),
+    buttons: {},
+    dialogClass: Drupal.settings.media.dialogOptions.dialogclass,
+    modal: Drupal.settings.media.dialogOptions.modal,
+    draggable: Drupal.settings.media.dialogOptions.draggable,
+    resizable: Drupal.settings.media.dialogOptions.resizable,
+    minWidth: Drupal.settings.media.dialogOptions.minwidth,
+    width: Drupal.settings.media.dialogOptions.width,
+    height: Drupal.settings.media.dialogOptions.height,
+    position: Drupal.settings.media.dialogOptions.position,
+    overlay: {
+      backgroundColor: Drupal.settings.media.dialogOptions.overlay.backgroundcolor,
+      opacity: Drupal.settings.media.dialogOptions.overlay.opacity
+    },
+    zIndex: Drupal.settings.media.dialogOptions.zindex,
+    close: function (event, ui) {
+      var elem = $(event.target);
+      var id = elem.attr('id');
+      if(id == 'mediaStyleSelector') {
+        $(this).dialog("destroy");
+        $('#mediaStyleSelector').remove();
+      }
+      else {
+        $(this).dialog("destroy");
+        $('#mediaBrowser').remove();
+      }
+    }
+  };
+};
+
+/**
+ * Get an iframe to serve as the dialog's contents. Common to both plugins.
+ */
+Drupal.media.popups.getPopupIframe = function (src, id, options) {
+  var defaults = {width: '100%', scrolling: 'auto'};
+  var options = $.extend({}, defaults, options);
+
+  return $('<iframe class="media-modal-frame" tabindex="0"/>')
+  .attr('src', src)
+  .attr('width', options.width)
+  .attr('id', id)
+  .attr('scrolling', options.scrolling);
+};
+
+Drupal.media.popups.overlayDisplace = function (dialog) {
+  if (parent.window.Drupal.overlay && jQuery.isFunction(parent.window.Drupal.overlay.getDisplacement)) {
+    var overlayDisplace = parent.window.Drupal.overlay.getDisplacement('top');
+
+    if (dialog.offset().top < overlayDisplace) {
+      dialog.css('top', overlayDisplace);
+    }
+  }
+}
+
+/**
+ * Size the dialog when it is first loaded and keep it centered when scrolling.
+ *
+ * @param jQuery dialogElement
+ *  The element which has .dialog() attached to it.
+ */
+Drupal.media.popups.sizeDialog = function (dialogElement) {
+  if (!dialogElement.is(':visible')) {
+    return;
+  }
+
+  var windowWidth = $(window).width();
+  var dialogWidth = windowWidth * 0.8;
+  var windowHeight = $(window).height();
+  var dialogHeight = windowHeight * 0.8;
+
+  dialogElement.dialog("option", "width", dialogWidth);
+  dialogElement.dialog("option", "height", dialogHeight);
+  dialogElement.dialog("option", "position", 'center');
+
+  $('.media-modal-frame').width('100%');
+}
+
+/**
+ * Resize the dialog when the window changes.
+ *
+ * @param jQuery dialogElement
+ *  The element which has .dialog() attached to it.
+ */
+Drupal.media.popups.resizeDialog = function (dialogElement) {
+  $(window).resize(function() {
+    Drupal.media.popups.sizeDialog(dialogElement);
+  });
+}
+
+/**
+ * Keeps the dialog centered when the window is scrolled.
+ *
+ * @param jQuery dialogElement
+ *  The element which has .dialog() attached to it.
+ */
+Drupal.media.popups.scrollDialog = function (dialogElement) {
+  // Keep the dialog window centered when scrolling.
+  $(window).scroll(function() {
+    if (!dialogElement.is(':visible')) {
+      return;
+    }
+
+    dialogElement.dialog("option", "position", 'center');
+  });
+}
+
+})(jQuery);
+
+;/*})'"*/
+;/*})'"*/
+/**
+ * @file
+ * Linkit ckeditor dialog helper.
+ */
+(function ($) {
+
+// Abort if Drupal.linkit is not defined.
+if (typeof Drupal.linkit === 'undefined') {
+  return ;
+}
+
+Drupal.linkit.registerDialogHelper('ckeditor', {
+  init : function() {},
+
+  /**
+   * Prepare the dialog after init.
+   */
+  afterInit : function () {
+     var editor = Drupal.settings.linkit.currentInstance.editor;
+     var element = CKEDITOR.plugins.link.getSelectedLink(editor);
+
+    // If we have selected a link element, lets populate the fields in the
+    // modal with the values from that link element.
+    if (element) {
+      link = {
+        path: element.data('cke-saved-href') || element.getAttribute('href') || '',
+        attributes: {}
+      },
+      // Get all attributes that have fields in the modal.
+      additionalAttributes = Drupal.linkit.additionalAttributes();
+
+      for (var i = 0; i < additionalAttributes.length; i++) {
+        link.attributes[additionalAttributes[i]] = element.getAttribute(additionalAttributes[i]);
+      }
+
+      // Populate the fields.
+      Drupal.linkit.populateFields(link);
+    }
+  },
+
+  /**
+   * Insert the link into the editor.
+   *
+   * @param {Object} link
+   *   The link object.
+   */
+  insertLink : function(link) {
+    var editor = Drupal.settings.linkit.currentInstance.editor;
+    CKEDITOR.tools.callFunction(editor._.linkitFnNum, link, editor);
+  }
+});
+
+})(jQuery);
+;/*})'"*/
+;/*})'"*/
